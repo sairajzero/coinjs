@@ -21,11 +21,12 @@
 	/* other vars */
 	coinjs.developer = '33tht1bKDgZVxb39MnZsWa8oxHXHvUYE4G'; //bitcoin
 
-	/* bit(coinb.in) api vars */
+	/* bit(coinb.in) api vars 
 	coinjs.hostname = ((document.location.hostname.split(".")[(document.location.hostname.split(".")).length - 1]) == 'onion') ? 'coinbin3ravkwb24f7rmxx6w3snkjw45jhs5lxbh3yfeg3vpt6janwqd.onion' : 'coinb.in';
 	coinjs.host = ('https:' == document.location.protocol ? 'https://' : 'http://') + coinjs.hostname + '/api/';
 	coinjs.uid = '1';
 	coinjs.key = '12345678901234567890123456789012';
+	*/
 
 	/* start of address functions */
 
@@ -61,7 +62,7 @@
 		x += (document.getElementById("entropybucket")) ? document.getElementById("entropybucket").innerHTML : '';
 		x += x + '' + x;
 		var r = x;
-		for (i = 0; i < (x).length / 25; i++) {
+		for (let i = 0; i < (x).length / 25; i++) {
 			r = Crypto.SHA256(r.concat(x));
 		}
 		var checkrBigInt = new BigInteger(r);
@@ -310,7 +311,7 @@
 				throw "Invalid checksum";
 			}
 		} catch (e) {
-			bech32rs = coinjs.bech32redeemscript(addr);
+			var bech32rs = coinjs.bech32redeemscript(addr);
 			if (bech32rs) {
 				return { 'type': 'bech32', 'redeemscript': bech32rs };
 			} else {
@@ -1358,8 +1359,8 @@
 					return { 'type': 'segwit', 'signed': signed, 'signatures': sigs, 'script': Crypto.util.bytesToHex(this.ins[index].script.chunks[0]), 'value': value };
 				} else if (this.ins[index].script.chunks[0] == 0 && this.ins[index].script.chunks[this.ins[index].script.chunks.length - 1][this.ins[index].script.chunks[this.ins[index].script.chunks.length - 1].length - 1] == 174) { // OP_CHECKMULTISIG
 					// multisig script, with signature(s) included
-					sigcount = 0;
-					for (i = 1; i < this.ins[index].script.chunks.length - 1; i++) {
+					var sigcount = 0;
+					for (let i = 1; i < this.ins[index].script.chunks.length - 1; i++) {
 						if (this.ins[index].script.chunks[i] != 0) {
 							sigcount++;
 						}
@@ -1371,7 +1372,10 @@
 					return { 'type': 'multisig', 'signed': 'false', 'signatures': 0, 'script': Crypto.util.bytesToHex(this.ins[index].script.buffer) };
 				} else if (this.ins[index].script.chunks.length == 0) {
 					// empty
-					return { 'type': 'empty', 'signed': 'false', 'signatures': 0, 'script': '' };
+					//bech32 witness check
+					var signed = ((this.witness[index]) && this.witness[index].length == 2) ? 'true' : 'false';
+                    var sigs = (signed == 'true') ? 1 : 0;
+					return { 'type': 'empty', 'signed': signed, 'signatures': sigs, 'script': '' };
 				} else {
 					// something else
 					return { 'type': 'unknown', 'signed': 'false', 'signatures': 0, 'script': Crypto.util.bytesToHex(this.ins[index].script.buffer) };
@@ -1563,8 +1567,8 @@
 
 			s.writeOp(0);
 
-			for (x in pubkeyList) {
-				for (y in sigsList) {
+			for (let x in pubkeyList) {
+				for (let y in sigsList) {
 					this.ins[index].script.buffer = redeemScript;
 					sighash = Crypto.util.hexToBytes(this.transactionHash(index, sigsList[y].slice(-1)[0] * 1));
 					if (coinjs.verifySignature(sighash, sigsList[y], pubkeyList[x])) {
@@ -1600,16 +1604,23 @@
 					this.ins[index].script = script;
 
 					if (!coinjs.isArray(this.witness)) {
-						this.witness = [];
+						this.witness = new Array(this.ins.length);
+						this.witness.fill([]);
 					}
 
-					this.witness.push([signature, wif2['pubkey']]);
+					this.witness[index] = ([signature, wif2['pubkey']]);
+
+					// bech32, empty redeemscript
+					if (bech32['redeemscript'] == Crypto.util.bytesToHex(this.ins[index].script.chunks[0])) {
+						this.ins[index].script = coinjs.script();
+					}
 
 					/* attempt to reorder witness data as best as we can. 
 					   data can't be easily validated at this stage as 
 					   we dont have access to the inputs value and 
 					   making a web call will be too slow. */
 
+					/*
 					var witness_order = [];
 					var witness_used = [];
 					for (var i = 0; i < this.ins.length; i++) {
@@ -1640,6 +1651,7 @@
 					}
 
 					this.witness = witness_order;
+					*/
 				}
 			}
 			return true;
@@ -1784,12 +1796,12 @@
 				for (i = 0; i < ins; ++i) {
 					var count = readVarInt();
 					var vector = [];
+					if (!coinjs.isArray(obj.witness[i])) {
+						obj.witness[i] = [];
+					}
 					for (var y = 0; y < count; y++) {
 						var slice = readVarInt();
 						pos += slice;
-						if (!coinjs.isArray(obj.witness[i])) {
-							obj.witness[i] = [];
-						}
 						obj.witness[i].push(Crypto.util.bytesToHex(buffer.slice(pos - slice, pos)));
 					}
 				}
@@ -2060,7 +2072,7 @@
 		var r = "";
 		var l = length || 25;
 		var chars = "!$%^&*()_+{}:@~?><|\./;'#][=-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
-		for (x = 0; x < l; x++) {
+		for (let x = 0; x < l; x++) {
 			r += chars.charAt(Math.floor(Math.random() * 62));
 		}
 		return r;
