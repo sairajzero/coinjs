@@ -144,6 +144,20 @@
 		return { 'address': address, 'redeemScript': redeemScript, 'size': s.buffer.length };
 	}
 
+	//Return a Bech32 address for the multisig. Format is same as above
+	coinjs.pubkeys2MultisigAddressBech32 = function (pubkeys, required) {
+		var r = coinjs.pubkeys2MultisigAddress(pubkeys, required);
+		var program = Crypto.SHA256(Crypto.util.hexToBytes(r.redeemScript), {
+			asBytes: true
+		});
+		var address = coinjs.bech32_encode(coinjs.bech32.hrp, [coinjs.bech32.version].concat(coinjs.bech32_convert(program, 8, 5, true)));
+		return {
+			'address': address,
+			'redeemScript': r.redeemScript,
+			'size': r.size
+		};
+	}
+
 	/* new time locked address, provide the pubkey and time necessary to unlock the funds.
 	   when time is greater than 500000000, it should be a unix timestamp (seconds since epoch),
 	   otherwise it should be the block height required before this transaction can be released. 
@@ -196,6 +210,18 @@
 		var program = ripemd160(Crypto.SHA256(Crypto.util.hexToBytes(pubkey), { asBytes: true }), { asBytes: true });
 		var address = coinjs.bech32_encode(coinjs.bech32.hrp, [coinjs.bech32.version].concat(coinjs.bech32_convert(program, 8, 5, true)));
 		return { 'address': address, 'type': 'bech32', 'redeemscript': Crypto.util.bytesToHex(program) };
+	}
+
+	coinjs.multisigBech32Address = function (raw_redeemscript) {
+		var program = Crypto.SHA256(Crypto.util.hexToBytes(raw_redeemscript), {
+			asBytes: true
+		});
+		var address = coinjs.bech32_encode(coinjs.bech32.hrp, [coinjs.bech32.version].concat(coinjs.bech32_convert(program, 8, 5, true)));
+		return {
+			'address': address,
+			'type': 'multisigBech32',
+			'redeemscript': Crypto.util.bytesToHex(program)
+		};
 	}
 
 	/* extract the redeemscript from a bech32 address */
@@ -272,6 +298,9 @@
 				} else if (o.version == coinjs.multisig) { // multisig address
 					o.type = 'multisig';
 
+				} else if (o.version == coinjs.multisigBech32) { // multisigBech32 added
+					o.type = 'multisigBech32';
+
 				} else if (o.version == coinjs.priv) { // wifkey
 					o.type = 'wifkey';
 
@@ -312,8 +341,10 @@
 			}
 		} catch (e) {
 			var bech32rs = coinjs.bech32redeemscript(addr);
-			if (bech32rs) {
+			if (bech32rs && bech32rs.length == 40) {
 				return { 'type': 'bech32', 'redeemscript': bech32rs };
+			} else if (bech32rs && bech32rs.length == 64) {
+				return { 'type': 'multisigBech32', 'redeemscript': bech32rs };
 			} else {
 				return false;
 			}
@@ -920,11 +951,39 @@
 			return r;
 		}
 
+		/* decode the redeemscript of a multisignature transaction for Bech32*/
+		r.decodeRedeemScriptBech32 = function (script) {
+			var r = false;
+			try {
+				var s = coinjs.script(Crypto.util.hexToBytes(script));
+				if ((s.chunks.length >= 3) && s.chunks[s.chunks.length - 1] == 174) { //OP_CHECKMULTISIG
+					r = {};
+					r.signaturesRequired = s.chunks[0] - 80;
+					var pubkeys = [];
+					for (var i = 1; i < s.chunks.length - 2; i++) {
+						pubkeys.push(Crypto.util.bytesToHex(s.chunks[i]));
+					}
+					r.pubkeys = pubkeys;
+					var multi = coinjs.pubkeys2MultisigAddressBech32(pubkeys, r.signaturesRequired);
+					r.address = multi['address'];
+					r.type = 'multisig__'; // using __ for now to differentiat from the other object .type == "multisig"
+					var rs = Crypto.util.bytesToHex(s.buffer);
+					r.redeemscript = rs;
+
+				}
+
+			} catch (e) {
+				// console.log(e);
+				r = false;
+			}
+			return r;
+		}
+
 		/* create output script to spend */
 		r.spendToScript = function (address) {
 			var addr = coinjs.addressDecode(address);
 			var s = coinjs.script();
-			if (addr.type == "bech32") {
+			if (addr.type == "bech32" || addr.type == "multisigBech32") {
 				s.writeOp(0);
 				s.writeBytes(Crypto.util.hexToBytes(addr.redeemscript));
 			} else if (addr.version == coinjs.multisig) { // multisig address
@@ -1112,7 +1171,7 @@
 						var n = u.getElementsByTagName("tx_output_n")[0].childNodes[0].nodeValue;
 						var scr = script || u.getElementsByTagName("script")[0].childNodes[0].nodeValue;
 
-						if (segwit) {
+						if (segwit) { //also for MULTISIG_BECH32 (p2wsh-multisig)(script = raw_redeemscript; for p2wsh-multisig)
 							/* this is a small hack to include the value with the redeemscript to make the signing procedure smoother. 
 							It is not standard and removed during the signing procedure. */
 
@@ -1247,7 +1306,7 @@
 
 			// start redeem script check
 			var extract = this.extractScriptKey(index);
-			if (extract['type'] != 'segwit') {
+			if (extract['type'] != 'segwit' && extract['type'] != 'multisig_bech32') {
 				return { 'result': 0, 'fail': 'redeemscript', 'response': 'redeemscript missing or not valid for segwit' };
 			}
 
@@ -1268,6 +1327,8 @@
 				scriptcode = scriptcode.slice(1);
 				scriptcode.unshift(25, 118, 169);
 				scriptcode.push(136, 172);
+			} else if (scriptcode[0] > 80) {
+				scriptcode.unshift(scriptcode.length)
 			}
 
 			var value = coinjs.numToBytes(extract['value'], 8);
@@ -1370,11 +1431,26 @@
 				} else if (this.ins[index].script.chunks[0] >= 80 && this.ins[index].script.chunks[this.ins[index].script.chunks.length - 1] == 174) { // OP_CHECKMULTISIG
 					// multisig script, without signature!
 					return { 'type': 'multisig', 'signed': 'false', 'signatures': 0, 'script': Crypto.util.bytesToHex(this.ins[index].script.buffer) };
+				} else if (this.ins[index].script.chunks.length == 3 && this.ins[index].script.chunks[0][0] >= 80 && this.ins[index].script.chunks[0][this.ins[index].script.chunks[0].length - 1] == 174 && this.ins[index].script.chunks[1] == 0) { //OP_CHECKMULTISIG_BECH32
+					// multisig bech32 script
+					let last_index = this.ins[index].script.chunks.length - 1;
+					var value = -1;
+					if (last_index >= 2 && this.ins[index].script.chunks[last_index].length == 8) {
+						value = coinjs.bytesToNum(this.ins[index].script.chunks[last_index]); // value found encoded in transaction (THIS IS NON STANDARD)
+					}
+					var sigcount = (!this.witness[index]) ? 0 : this.witness[index].length - 2;
+					return {
+						'type': 'multisig_bech32',
+						'signed': 'false',
+						'signatures': sigcount,
+						'script': Crypto.util.bytesToHex(this.ins[index].script.chunks[0]),
+						'value': value
+					};
 				} else if (this.ins[index].script.chunks.length == 0) {
 					// empty
 					//bech32 witness check
-					var signed = ((this.witness[index]) && this.witness[index].length == 2) ? 'true' : 'false';
-                    var sigs = (signed == 'true') ? 1 : 0;
+					var signed = ((this.witness[index]) && this.witness[index].length >= 2) ? 'true' : 'false';
+					var sigs = (signed == 'true') ? (!this.witness[index][0] ? this.witness[index].length - 2 : 1) : 0;
 					return { 'type': 'empty', 'signed': signed, 'signatures': sigs, 'script': '' };
 				} else {
 					// something else
@@ -1527,6 +1603,71 @@
 			return true;
 		}
 
+		r.signmultisig_bech32 = function (index, wif, sigHashType) {
+
+			function scriptListPubkey(redeemScript) {
+				var r = {};
+				for (var i = 1; i < redeemScript.chunks.length - 2; i++) {
+					r[i] = Crypto.util.hexToBytes(coinjs.pubkeydecompress(Crypto.util.bytesToHex(redeemScript.chunks[i])));
+				}
+				return r;
+			}
+
+			function scriptListSigs(sigList) {
+				let r = {};
+				var c = 0;
+				if (Array.isArray(sigList)) {
+					for (let i = 1; i < sigList.length - 1; i++) {
+						c++;
+						r[c] = Crypto.util.hexToBytes(sigList[i]);
+					}
+				}
+				return r;
+			}
+
+			var redeemScript = Crypto.util.bytesToHex(this.ins[index].script.chunks[0]); //redeemScript
+
+			if (!coinjs.isArray(this.witness)) {
+				this.witness = new Array(this.ins.length);
+				this.witness.fill([]);
+			}
+
+			var pubkeyList = scriptListPubkey(coinjs.script(redeemScript));
+			var sigsList = scriptListSigs(this.witness[index]);
+			let decode_rs = coinjs.script().decodeRedeemScriptBech32(redeemScript);
+
+			var shType = sigHashType || 1;
+			var txhash = this.transactionHashSegWitV0(index, shType);
+
+			if (txhash.result == 1 && decode_rs.pubkeys.includes(coinjs.wif2pubkey(wif)['pubkey'])) {
+
+				var segwitHash = Crypto.util.hexToBytes(txhash.hash);
+				var signature = Crypto.util.hexToBytes(this.transactionSig(index, wif, shType, segwitHash)); //CHECK THIS
+
+				sigsList[coinjs.countObject(sigsList) + 1] = signature;
+
+				var w = [];
+
+				for (let x in pubkeyList) {
+					for (let y in sigsList) {
+						var sighash = this.transactionHashSegWitV0(index, sigsList[y].slice(-1)[0] * 1).hash
+						sighash = Crypto.util.hexToBytes(sighash);
+						if (coinjs.verifySignature(sighash, sigsList[y], pubkeyList[x])) {
+							w.push((Crypto.util.bytesToHex(sigsList[y])))
+						}
+					}
+				}
+
+				// when enough signatures collected, remove any non standard data we store, i.e. input value
+				if (w.length >= decode_rs.signaturesRequired) {
+					this.ins[index].script = coinjs.script();
+				}
+				w.unshift(0);
+				w.push(redeemScript);
+				this.witness[index] = w;
+			}
+		}
+
 		/* sign a multisig input */
 		r.signmultisig = function (index, wif, sigHashType) {
 
@@ -1675,6 +1816,9 @@
 
 				} else if (d['type'] == 'multisig') {
 					this.signmultisig(i, wif, shType);
+
+				} else if (d['type'] == 'multisig_bech32' && d['signed'] == "false") {
+					this.signmultisig_bech32(i, wif, shType);
 
 				} else if (d['type'] == 'segwit') {
 					this.signsegwit(i, wif, shType);
